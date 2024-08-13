@@ -62,7 +62,7 @@ def refresh_peer(peer: str = DCLIMATE_PEER):
     Returns:
         dict: response from ipfs api
     """
-    r = requests.post(f"{get_host()}/swarm/connect", params={"arg": peer})
+    r = requests.post(f"{_get_host()}/swarm/connect", params={"arg": peer})
     r.raise_for_status()
     return r.json()
 
