@@ -4,12 +4,36 @@ import os
 
 import requests
 import xarray as xr
-from ipldstore import get_ipfs_mapper
+import ipfshttpclient, multiaddr
+# from ipldstore import get_ipfs_mapper
+from ipldstore_v1 import get_ipfs_mapper
 
 from .dclimate_zarr_errors import DatasetNotFoundError, NoMetadataFoundError
 
-DEFAULT_HOST = "http://127.0.0.1:5001/api/v0"
-VALID_TIME_SPANS = ["daily", "hourly", "weekly", "quarterly"]
+# DEFAULT_HOST = "http://127.0.0.1:5001/api/v0"
+# VALID_TIME_SPANS = ["daily", "hourly", "weekly", "quarterly"]
+DEFAULT_HOST = "http://0.0.0.0:5001"
+DEFAULT_PEER = "/ip4/45.55.32.80/tcp/4001/p2p/12D3KooWG7itEPAHut3xsVo7CwyD8sKeQXKgQizotNhPsToCssXQ"
+DCLIMATE_PEER = os.getenv("V4_PEER", DEFAULT_PEER)
+
+
+def get_ipfs_client():
+    host_from_env = os.getenv("IPFS_HOST", DEFAULT_HOST)
+    host = host_from_env.split(":")[1][2:]
+    port = host_from_env.split(":")[2].split("/")[0]
+    daemon = multiaddr.Multiaddr(f"/dns4/{host}/tcp/{port}/http")
+    client = ipfshttpclient.connect(daemon, timeout=None, session=True)
+    return client
+
+
+def retrieve_from_ipfs(cid: str):
+    client = get_ipfs_client()
+    try:
+        data = client.cat(cid)
+        return data
+    except Exception as e:
+        print(f'error pulling ipfs cid {cid}: {e}')
+        raise e
 
 
 def _get_host(uri: str = "/api/v0"):
@@ -24,8 +48,41 @@ def _get_host(uri: str = "/api/v0"):
 
     """
 
-    host_from_env = os.getenv("IPFS_HOST")
-    return host_from_env + uri if host_from_env else DEFAULT_HOST
+    host_from_env = os.getenv("IPFS_HOST", DEFAULT_HOST)
+    return host_from_env + uri
+
+
+
+def refresh_peer(peer: str = DCLIMATE_PEER):
+    """Refresh the ipfs peer
+
+    Args:
+        peer (str, optional): the peer to connect to. Defaults to DCLIMATE_PEER.
+
+    Returns:
+        dict: response from ipfs api
+    """
+    r = requests.post(f"{get_host()}/swarm/connect", params={"arg": peer})
+    r.raise_for_status()
+    return r.json()
+
+
+def get_ipns_hash_from_name(ipns_key_str: str) -> str:
+    """ Find the latest IPNS name hash corresponding to a string (key)
+
+        Args:
+            ipfs_key_str (str): a string (key) identifying a dataset
+
+        Raises:
+            KeyError: raised if no IPNS key string is found in the IPNS keys list
+
+        Returns:
+            str: ipfsname hash corresponding to the provided string
+    """
+    r = requests.get(f'https://api.dclimate.net/apiv4/get_heads')
+    r.raise_for_status()
+    dataset_cid = r.json()[ipns_key_str]
+    return dataset_cid
 
 
 def _get_single_metadata(ipfs_hash: str) -> dict:
@@ -69,29 +126,30 @@ def _resolve_ipns_name_hash(ipns_name_hash: str) -> str:
     Returns:
         str: ipfs hash corresponding to this ipns name hash
     """
-    r = requests.post(f"{_get_host()}/name/resolve", params={"arg": ipns_name_hash, "offline": True})
+    refresh_peer()
+    r = requests.post(f"{_get_host()}/name/resolve", params={"arg": ipns_name_hash}) # "offline": True
     r.raise_for_status()
     return r.json()["Path"].split("/")[-1]
 
 
-def get_ipns_name_hash(ipns_key_str: str) -> str:
-    """Find the latest IPNS name hash corresponding to a string (key)
+# def get_ipns_name_hash(ipns_key_str: str) -> str:
+#     """Find the latest IPNS name hash corresponding to a string (key)
 
-    Args:
-        ipfs_key_str (str): a string (key) identifying a dataset
+#     Args:
+#         ipfs_key_str (str): a string (key) identifying a dataset
 
-    Raises:
-        KeyError: raised if no IPNS key string is found in the IPNS keys list
+#     Raises:
+#         KeyError: raised if no IPNS key string is found in the IPNS keys list
 
-    Returns:
-        str: ipfsname hash corresponding to the provided string
-    """
-    r = requests.post(f"{_get_host()}/key/list", params={"decoder": "json"})
-    r.raise_for_status()
-    for entry in r.json()["Keys"]:
-        if entry["Name"] == ipns_key_str:
-            return entry["Id"]
-    raise DatasetNotFoundError("Invalid dataset name")
+#     Returns:
+#         str: ipfsname hash corresponding to the provided string
+#     """
+#     r = requests.post(f"{_get_host()}/key/list", params={"decoder": "json"})
+#     r.raise_for_status()
+#     for entry in r.json()["Keys"]:
+#         if entry["Name"] == ipns_key_str:
+#             return entry["Id"]
+#     raise DatasetNotFoundError("Invalid dataset name")
 
 
 def _get_relevant_metadata(ipfs_head_hash: str, as_of: datetime.datetime) -> dict:
@@ -127,6 +185,7 @@ def get_dataset_by_ipfs_hash(ipfs_hash: str) -> xr.Dataset:
     Returns:
         xr.Dataset: dataset corresponding to hash
     """
+    refresh_peer()
     ipfs_mapper = get_ipfs_mapper(host=_get_host(uri=""))
     ipfs_mapper.set_root(ipfs_hash)
     return xr.open_zarr(ipfs_mapper, chunks=None)
@@ -149,45 +208,47 @@ def get_dataset_by_ipns_hash(ipns_name_hash: str, as_of: typing.Optional[datetim
     else:
         metadata = _get_single_metadata(ipfs_head_hash)
     try:
+        head_cid = metadata["assets"]["zmetadata"]["href"]["/"]
         dataset_hash = get_dataset_by_ipfs_hash(metadata["assets"]["zmetadata"]["href"]["/"])
     except KeyError:
+        head_cid = metadata["assets"]["analytic"]["href"]["/"]
         dataset_hash = get_dataset_by_ipfs_hash(metadata["assets"]["analytic"]["href"]["/"])
-    return dataset_hash
+    return head_cid, dataset_hash
 
 
-def get_metadata_by_key(key: str) -> dict:
-    """Get STAC metadata for specific dataset
+# def get_metadata_by_key(key: str) -> dict:
+#     """Get STAC metadata for specific dataset
 
-    Args:
-        key (str): dataset key
+#     Args:
+#         key (str): dataset key
 
-    Returns:
-        dict: STAC metadata corresponding to key
-    """
-    ipns_name = get_ipns_name_hash(key)
-    ipfs_hash = _resolve_ipns_name_hash(ipns_name)
-    return _get_single_metadata(ipfs_hash)
-
-
-def get_heads() -> typing.Dict[str, str]:
-    """Get datasets available on IPFS node and their most recent CID
-
-    Returns:
-        typing.Dict[str, str]: Dictionary of dataset keys and CID values
-    """
-    r = requests.post(f"{_get_host()}/key/list", params={"decoder": "json"})
-    r.raise_for_status()
-    return {
-        name_dict["Name"]: name_dict["Id"]
-        for name_dict in r.json()["Keys"]
-        if any([span in name_dict["Name"] for span in VALID_TIME_SPANS])
-    }
+#     Returns:
+#         dict: STAC metadata corresponding to key
+#     """
+#     ipns_name = get_ipns_name_hash(key)
+#     ipfs_hash = _resolve_ipns_name_hash(ipns_name)
+#     return _get_single_metadata(ipfs_hash)
 
 
-def list_datasets() -> typing.List[str]:
-    """List datasets available on IPFS node
+# def get_heads() -> typing.Dict[str, str]:
+#     """Get datasets available on IPFS node and their most recent CID
 
-    Returns:
-        typing.List[str]: List of available datasets' keys
-    """
-    return list(get_heads().keys())
+#     Returns:
+#         typing.Dict[str, str]: Dictionary of dataset keys and CID values
+#     """
+#     r = requests.post(f"{_get_host()}/key/list", params={"decoder": "json"})
+#     r.raise_for_status()
+#     return {
+#         name_dict["Name"]: name_dict["Id"]
+#         for name_dict in r.json()["Keys"]
+#         if any([span in name_dict["Name"] for span in VALID_TIME_SPANS])
+#     }
+
+
+# def list_datasets() -> typing.List[str]:
+#     """List datasets available on IPFS node
+
+#     Returns:
+#         typing.List[str]: List of available datasets' keys
+#     """
+#     return list(get_heads().keys())

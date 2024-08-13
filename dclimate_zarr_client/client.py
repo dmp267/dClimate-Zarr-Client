@@ -11,7 +11,7 @@ from .dclimate_zarr_errors import (
     InvalidExportFormatError,
 )
 from .geotemporal_data import GeotemporalData, DEFAULT_POINT_LIMIT
-from .s3_retrieval import get_dataset_from_s3
+# from .s3_retrieval import get_dataset_from_s3
 
 
 def load_ipns(
@@ -30,36 +30,39 @@ def load_ipns(
         Pull in most recent data created before this time. If ``None``, just get most
         recent. Defaults to ``None``.
     """
-    from .ipfs_retrieval import get_dataset_by_ipns_hash, get_ipns_name_hash
+    from .ipfs_retrieval import get_dataset_by_ipns_hash, get_ipns_hash_from_name #get_ipns_name_hash
 
-    ipns_name_hash = get_ipns_name_hash(dataset_name)
-    ds = get_dataset_by_ipns_hash(ipns_name_hash, as_of=as_of)
-    return GeotemporalData(ds, dataset_name=dataset_name)
+    # ipns_name_hash = get_ipns_name_hash(dataset_name)
+    # ds = get_dataset_by_ipns_hash(ipns_name_hash, as_of=as_of)
+    # return GeotemporalData(ds, dataset_name=dataset_name)
+    ipns_name_hash = get_ipns_hash_from_name(dataset_name)
+    head_cid, ds = get_dataset_by_ipns_hash(ipns_name_hash, as_of=as_of)
+    return head_cid, GeotemporalData(ds, dataset_name=dataset_name)
 
 
-def load_s3(
-    dataset_name: str,
-    bucket_name: str,
-) -> GeotemporalData:
-    """
-    Load a Geotemporal dataset from an S3 bucket.
+# def load_s3(
+#     dataset_name: str,
+#     bucket_name: str,
+# ) -> GeotemporalData:
+#     """
+#     Load a Geotemporal dataset from an S3 bucket.
 
-    Parameters
-    ----------
+#     Parameters
+#     ----------
 
-    dataset_name: str
-        The name of the dataset in the bucket.
-    bucket_name: str
-        S3 bucket name where the dataset is going to be fetched
-    """
-    ds = get_dataset_from_s3(dataset_name, bucket_name)
-    return GeotemporalData(ds, dataset_name=dataset_name)
+#     dataset_name: str
+#         The name of the dataset in the bucket.
+#     bucket_name: str
+#         S3 bucket name where the dataset is going to be fetched
+#     """
+#     ds = get_dataset_from_s3(dataset_name, bucket_name)
+#     return GeotemporalData(ds, dataset_name=dataset_name)
 
 
 def geo_temporal_query(
     dataset_name: str,
-    source: typing.Literal["ipfs", "s3"] = "ipfs",
-    bucket_name: str = None,
+    # source: typing.Literal["ipfs", "s3"] = "ipfs",
+    # bucket_name: str = None,
     var_name: str = None,
     forecast_reference_time: str = None,
     point_kwargs: dict = None,
@@ -166,12 +169,14 @@ def geo_temporal_query(
         point_limit = DEFAULT_POINT_LIMIT
 
     # Use the provided dataset string to find the dataset via IPNS
-    if source == "ipfs":
-        data = load_ipns(dataset_name, as_of=as_of)
-    elif source == "s3":
-        data = load_s3(dataset_name, bucket_name)
-    else:
-        raise ValueError("only possible sources are s3 and IPFS")
+    # if source == "ipfs":
+        # data = load_ipns(dataset_name, as_of=as_of)
+    # elif source == "s3":
+    #     data = load_s3(dataset_name, bucket_name)
+    # else:
+    #     raise ValueError("only possible sources are s3 and IPFS")
+    head_cid, data = load_ipns(dataset_name, as_of=as_of)
+    print(f'head_cid: {head_cid}')
 
     # If specific variable is requested, use that
     if var_name is not None:
@@ -196,7 +201,11 @@ def geo_temporal_query(
     )
 
     # Export
+    # if output_format == "netcdf":
+    #     return data.to_netcdf()
+    # else:
+    #     return data.as_dict()
     if output_format == "netcdf":
-        return data.to_netcdf()
+        return head_cid, data.to_netcdf()
     else:
-        return data.as_dict()
+        return head_cid, data.as_dict()
